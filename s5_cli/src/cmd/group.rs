@@ -393,6 +393,7 @@ pub async fn run_group(
             label,
             path,
             store,
+            jobs,
         } => {
             let group_id = resolve_group_id(node_config_file, &group_id)?;
             let gd = load_group_data(node_config_file, &group_id)?;
@@ -483,37 +484,63 @@ pub async fn run_group(
             let mut dir_visited = HashSet::new();
             export_dir_recursive(&meta_store, &target_store, root_hash, &mut dir_visited, &mut dir_exported).await?;
 
-            // Download and pin each file blob
-            let mut pinned = 0usize;
-            let mut skipped = 0usize;
-            for (name, hash, _size) in &file_hashes {
-                if target_store.contains(*hash).await.unwrap_or(false) {
-                    skipped += 1;
-                    continue;
-                }
+            // Download and pin file blobs concurrently
+            let concurrency = jobs.max(1);
+            let my_id = endpoint.id();
+            let peers: Vec<EndpointAddr> = gd.bootstrap_peers.iter()
+                .filter(|p| p.id != my_id)
+                .cloned()
+                .collect();
 
-                // Try downloading from bootstrap peers
-                let mut downloaded = false;
-                for peer_addr in &gd.bootstrap_peers {
-                    if peer_addr.id == endpoint.id() {
-                        continue;
+            let pinned = std::sync::atomic::AtomicUsize::new(0);
+            let skipped = std::sync::atomic::AtomicUsize::new(0);
+            let failed = std::sync::atomic::AtomicUsize::new(0);
+
+            use futures::stream::StreamExt;
+            let results: Vec<Result<()>> = futures::stream::iter(file_hashes.iter().map(|(name, hash, _size)| {
+                let endpoint = endpoint.clone();
+                let target_store = target_store.clone();
+                let peers = peers.clone();
+                let name = name.clone();
+                let hash = *hash;
+                let pinned = &pinned;
+                let skipped = &skipped;
+                let failed = &failed;
+                async move {
+                    if target_store.contains(hash).await.unwrap_or(false) {
+                        skipped.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        return Ok(());
                     }
-                    let client = BlobsClient::connect(endpoint.clone(), peer_addr.clone());
-                    match client.blob_download(*hash).await {
-                        Ok(bytes) if !bytes.is_empty() => {
-                            target_store.import_bytes(bytes).await
-                                .with_context(|| format!("failed to store {}", name))?;
-                            pinned += 1;
-                            downloaded = true;
-                            break;
+
+                    for peer_addr in &peers {
+                        let client = BlobsClient::connect(endpoint.clone(), peer_addr.clone());
+                        match client.blob_download(hash).await {
+                            Ok(bytes) if !bytes.is_empty() => {
+                                target_store.import_bytes(bytes).await
+                                    .with_context(|| format!("failed to store {}", name))?;
+                                pinned.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                                return Ok(());
+                            }
+                            _ => continue,
                         }
-                        _ => continue,
                     }
-                }
-                if !downloaded {
+
+                    failed.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     println!("  warning: could not download {} (hash: {})", name, hash);
+                    Ok(())
                 }
+            }))
+            .buffer_unordered(concurrency)
+            .collect()
+            .await;
+
+            // Propagate any store errors
+            for result in results {
+                result?;
             }
+
+            let pinned = pinned.load(std::sync::atomic::Ordering::Relaxed);
+            let skipped = skipped.load(std::sync::atomic::Ordering::Relaxed);
 
             // Clean up temp dir
             let _ = std::fs::remove_dir_all(&tmp_dir);

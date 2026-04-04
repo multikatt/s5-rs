@@ -277,6 +277,9 @@ enum GroupCmd {
         /// Local store to pin into
         #[arg(long, value_name = "STORE_NAME")]
         store: Option<String>,
+        /// Number of concurrent downloads
+        #[arg(long, short = 'j', default_value = "8")]
+        jobs: usize,
     },
     /// Mount a shared root from a group via FUSE (files fetched on demand)
     Mount {
