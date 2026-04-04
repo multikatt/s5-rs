@@ -344,15 +344,17 @@ async fn handle_download(
     };
     let hash: Hash = req.hash.into();
 
-    if let Some(pinner) = &pinner {
-        // Check if user has pinned the blob
-        let is_pinned = pinner
-            .is_pinned(hash, PinContext::NodeId(node_id_bytes))
-            .await
-            .unwrap_or(false);
+    if !cfg.skip_pin_check {
+        if let Some(pinner) = &pinner {
+            // Check if user has pinned the blob
+            let is_pinned = pinner
+                .is_pinned(hash, PinContext::NodeId(node_id_bytes))
+                .await
+                .unwrap_or(false);
 
-        if !is_pinned {
-            return; // Not pinned by this user, deny download
+            if !is_pinned {
+                return; // Not pinned by this user, deny download
+            }
         }
     }
 

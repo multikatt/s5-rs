@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use anyhow::{Context, Result, anyhow, bail};
 use s5_blobs::Client as BlobsClient;
-use s5_core::{BlobsRead, BlobsWrite, RegistryPinner};
+use s5_core::{BlobsRead, BlobsWrite, Pins, RegistryPinner};
 use s5_node::config::S5NodeConfig;
 use s5_registry_redb::RedbRegistry;
 
@@ -59,6 +59,44 @@ pub async fn run_blobs(
                     bail!("remote error while deleting blob: {}", msg);
                 }
             }
+        }
+        BlobsCmd::Pin { peer, hash, store } => {
+            let endpoint = build_endpoint(&config.identity, config_dir).await?;
+            let peer_addr = peer_endpoint_addr(config, &peer)?;
+            let client = BlobsClient::connect(endpoint, peer_addr);
+            let hash = parse_hash_hex(&hash)?;
+
+            // Fetch the blob from the peer
+            let bytes = client
+                .blob_download(hash)
+                .await
+                .context("failed to download blob from peer")?;
+
+            // Write to local store
+            let blob_store = open_store(config, &store).await?;
+            let blob_id = blob_store
+                .import_bytes(bytes.into())
+                .await
+                .context("failed to write blob to local store")?;
+
+            // Pin it in the local registry
+            let registry_path = registry_path(node_config_file, config);
+            std::fs::create_dir_all(&registry_path)?;
+            let registry = RedbRegistry::open(&registry_path)?;
+            let pinner = RegistryPinner::new(registry);
+
+            // Use the node's own endpoint ID as the pin context
+            let node_endpoint = build_endpoint(&config.identity, config_dir).await?;
+            let node_id_bytes: [u8; 32] = *node_endpoint.id().as_bytes();
+            pinner
+                .pin_hash(hash, s5_core::PinContext::NodeId(node_id_bytes))
+                .await
+                .context("failed to pin blob")?;
+
+            println!(
+                "pinned blob: hash={} size={} store='{}'",
+                blob_id.hash, blob_id.size, store
+            );
         }
         BlobsCmd::GcLocal { store, dry_run } => {
             // Compute registry path exactly as the node would, so we

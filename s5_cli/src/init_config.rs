@@ -46,7 +46,22 @@ impl CmdConfig {
                             .into(),
                     );
 
-                let local_only_store_path = local_data_dir.join("local_only_store");
+                // Namespace data paths per node to avoid conflicts when
+                // running multiple nodes on the same machine.
+                let node_name = node_config_file
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("default");
+                let node_data_dir = local_data_dir.join(node_name);
+
+                // Set per-node registry path
+                let registry_dir = node_data_dir.join("registry");
+                doc.insert(
+                    "registry_path",
+                    registry_dir.to_str().unwrap().into(),
+                );
+
+                let local_only_store_path = node_data_dir.join("local_only_store");
                 let mut local_only_store_table = Table::new();
                 local_only_store_table.insert("type", "local".into());
                 local_only_store_table

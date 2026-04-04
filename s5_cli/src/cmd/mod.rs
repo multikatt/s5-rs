@@ -6,6 +6,7 @@ use s5_fs::{DirContext, FS5};
 use s5_node::config::S5NodeConfig;
 
 mod blobs;
+mod group;
 mod import;
 mod mount;
 mod snapshots;
@@ -13,6 +14,7 @@ mod tree;
 mod util;
 
 pub use blobs::run_blobs;
+pub use group::run_group;
 pub use import::run_import;
 pub use mount::run_mount;
 pub use snapshots::run_snapshots;
@@ -35,6 +37,15 @@ pub async fn run_command(
             let config: S5NodeConfig = toml::from_str(&toml_content)?;
             s5_node::run_node(node_config_file, config).await?;
             Ok(())
+        }
+        crate::Commands::Group { cmd } => {
+            let toml_content = std::fs::read_to_string(&node_config_file)?;
+            let config: S5NodeConfig = toml::from_str(&toml_content)?;
+            let fs_root = dirs
+                .data_dir()
+                .join("roots")
+                .join(format!("{}.fs5", cli_node));
+            run_group(cmd, &config, &node_config_file, &fs_root).await
         }
         _ => {
             let toml_content = std::fs::read_to_string(&node_config_file)?;
@@ -84,7 +95,9 @@ pub async fn run_command(
                     .await
                 }
                 crate::Commands::Tree { path } => run_tree(fs, fs_handle, path).await,
-                crate::Commands::Config { .. } | crate::Commands::Start => unreachable!(),
+                crate::Commands::Config { .. }
+                | crate::Commands::Start
+                | crate::Commands::Group { .. } => unreachable!(),
             }
         }
     }

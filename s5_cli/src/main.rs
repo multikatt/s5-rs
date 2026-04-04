@@ -73,6 +73,11 @@ enum Commands {
         #[arg(long, value_name = "PATH")]
         path: Option<String>,
     },
+    /// Group shared storage operations
+    Group {
+        #[command(subcommand)]
+        cmd: GroupCmd,
+    },
     /// Start the S5 Node and serve all hashes from the default blob store
     Start,
 }
@@ -156,6 +161,17 @@ enum BlobsCmd {
         /// Blob hash in hex (BLAKE3, 32 bytes)
         hash: String,
     },
+    /// Pin a blob from a peer to a local store (fetch + store + pin)
+    Pin {
+        /// Name of the peer to fetch from
+        #[arg(short, long)]
+        peer: String,
+        /// Blob hash in hex (BLAKE3, 32 bytes)
+        hash: String,
+        /// Name of the local store to pin into (default: "default")
+        #[arg(long, value_name = "STORE_NAME", default_value = "default")]
+        store: String,
+    },
     /// Perform conservative garbage collection on a local blob store
     /// used by this node. Only deletes blobs that have no pins in the
     /// node registry and are not reachable from the primary FS5 root
@@ -176,6 +192,106 @@ enum BlobsCmd {
         /// Name of the local store in the node config (e.g. "default")
         #[arg(long, value_name = "STORE_NAME", default_value = "default")]
         store: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum GroupCmd {
+    /// Create a new shared storage group
+    Create {
+        /// Human-readable group name
+        name: String,
+        /// Your display name within the group
+        #[arg(long)]
+        my_name: String,
+    },
+    /// Join a group using an invite link
+    Join {
+        /// The invite token (base64url string)
+        invite: String,
+        /// Your display name within the group
+        #[arg(long)]
+        my_name: String,
+    },
+    /// Leave a group
+    Leave {
+        /// Group ID in hex (64 chars)
+        group_id: String,
+    },
+    /// List members of a group
+    Members {
+        /// Group ID in hex (64 chars)
+        group_id: String,
+    },
+    /// Show group info and shared roots
+    Info {
+        /// Group ID in hex (64 chars)
+        group_id: String,
+    },
+    /// Share a directory snapshot with the group
+    Share {
+        /// Group ID in hex (64 chars)
+        group_id: String,
+        /// Label for this shared root (e.g. "photos", "music")
+        label: String,
+        /// BLAKE3 hash of the directory snapshot to share
+        hash: String,
+        /// Optional description
+        #[arg(long)]
+        description: Option<String>,
+    },
+    /// Remove a shared root from the group
+    Unshare {
+        /// Group ID in hex (64 chars)
+        group_id: String,
+        /// Label of the shared root to remove
+        label: String,
+    },
+    /// Download a shared root from the group into a local directory
+    Pull {
+        /// Group ID in hex (64 chars)
+        group_id: String,
+        /// Label of the shared root to download
+        label: String,
+        /// Local directory to restore the snapshot into
+        #[arg(long, default_value = ".")]
+        out: PathBuf,
+    },
+    /// Generate an invite link for the group
+    Invite {
+        /// Group ID in hex (64 chars)
+        group_id: String,
+        /// Generate a read-only invite (default is read-write)
+        #[arg(long, action = clap::ArgAction::SetTrue)]
+        read_only: bool,
+    },
+    /// Pin files from a shared root to local storage for serving to others
+    Pin {
+        /// Group ID or name alias
+        group_id: String,
+        /// Label of the shared root
+        label: String,
+        /// Optional path within the shared root (omit to pin everything)
+        #[arg(long)]
+        path: Option<String>,
+        /// Local store to pin into
+        #[arg(long, value_name = "STORE_NAME")]
+        store: Option<String>,
+    },
+    /// Mount a shared root from a group via FUSE (files fetched on demand)
+    Mount {
+        /// Group ID or name alias
+        group_id: String,
+        /// Label of the shared root to mount
+        label: String,
+        /// Mount point directory
+        mount_point: PathBuf,
+        /// Allow root user to access filesystem
+        #[arg(long, action = ArgAction::SetTrue)]
+        allow_root: bool,
+        /// Automatically unmount on process exit
+        #[arg(long, action = ArgAction::SetTrue)]
+        auto_unmount: bool,
     },
 }
 

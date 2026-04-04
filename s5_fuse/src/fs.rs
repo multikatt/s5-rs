@@ -495,7 +495,10 @@ impl Filesystem for ReadOnlyS5Fs {
             .store
             .read_as_bytes(hash, offset as u64, max_len)
             .await
-            .map_err(|_| Error::NoFileDir)?;
+            .map_err(|e| {
+                warn!("read blob {} failed: {:#}", hash, e);
+                Error::NoFileDir
+            })?;
         Ok(bytes)
     }
 

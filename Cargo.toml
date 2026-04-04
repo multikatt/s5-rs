@@ -7,6 +7,7 @@ members = [
   "s5_core",
   "s5_fs",
   "s5_fuse",
+  "s5_groups",
   "s5_node",
   "s5_registry",
   # Blob stores
@@ -47,6 +48,7 @@ s5_blobs = { path = "s5_blobs", version = "1.0.0-beta.1", default-features = fal
 s5_core = { path = "s5_core", version = "1.0.0-beta.1" }
 s5_fs = { path = "s5_fs", version = "1.0.0-beta.1" }
 s5_fuse = { path = "s5_fuse", version = "1.0.0-beta.1" }
+s5_groups = { path = "s5_groups", version = "1.0.0-beta.1" }
 s5_importer_http = { path = "importers/http", version = "1.0.0-beta.1" }
 s5_importer_local = { path = "importers/local", version = "1.0.0-beta.1" }
 s5_node = { path = "s5_node", version = "1.0.0-beta.1" }

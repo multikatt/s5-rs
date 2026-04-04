@@ -21,6 +21,10 @@ pub struct S5NodeConfig {
     pub store: BTreeMap<String, NodeConfigStore>,
     #[serde(default)]
     pub peer: BTreeMap<String, NodeConfigPeer>,
+    /// Default blob access policy for peers not listed in [peer].
+    /// If set, any connecting peer gets this access level.
+    #[serde(default)]
+    pub peer_default: Option<NodeConfigPeer>,
     /// File sync configurations keyed by name (e.g., "music")
     #[serde(default)]
     pub sync: BTreeMap<String, NodeConfigSync>,

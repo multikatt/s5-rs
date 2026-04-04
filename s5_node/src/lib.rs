@@ -93,6 +93,10 @@ impl S5Node {
                 peer_cfg.insert(id.clone(), blobs.clone());
             }
         }
+        // Insert wildcard default if configured
+        if let Some(default_peer) = &config.peer_default {
+            peer_cfg.insert("*".to_string(), default_peer.blobs.clone());
+        }
 
         // Create and register protocol servers.
         // When a registry is available we also create a `RegistryPinner`
