@@ -700,21 +700,19 @@ fn open_local_registry(
 
 /// Open a tee registry that reads/writes both local and remote peers.
 ///
-/// - Reads: try local first, fall back to remote
+/// - Reads: try remote first (freshest group state), fall back to local
 /// - Writes: go to both local and all remotes
 ///
-/// If no bootstrap peers are available, falls back to local-only.
+/// If the local redb cannot be opened (e.g. the node is running and holds
+/// the lock), falls back to remote-only. If no bootstrap peers are
+/// available, falls back to local-only.
 fn open_tee_registry(
     node_config_file: &std::path::Path,
     config: &S5NodeConfig,
     endpoint: &Endpoint,
     bootstrap_peers: &[EndpointAddr],
 ) -> Result<Arc<dyn s5_core::RegistryApi + Send + Sync>> {
-    let local = open_local_registry(node_config_file, config)?;
-
-    if bootstrap_peers.is_empty() {
-        return Ok(local);
-    }
+    let local = open_local_registry(node_config_file, config);
 
     // Connect to all bootstrap peers, skipping ourselves
     let my_id = endpoint.id();
@@ -730,17 +728,28 @@ fn open_tee_registry(
         remotes.push(Arc::new(remote));
     }
 
-    // If multiple remotes, use a MultiRegistry for the remote side
-    let remote: Arc<dyn s5_core::RegistryApi + Send + Sync> = if remotes.len() == 1 {
-        remotes.into_iter().next().unwrap()
+    let remote: Option<Arc<dyn s5_core::RegistryApi + Send + Sync>> = if remotes.is_empty() {
+        None
+    } else if remotes.len() == 1 {
+        Some(remotes.into_iter().next().unwrap())
     } else {
-        Arc::new(s5_node::MultiRegistry::new(remotes))
+        Some(Arc::new(s5_node::MultiRegistry::new(remotes)))
     };
 
-    // Tee with remote first: reads try remote (freshest group state),
-    // fall back to local when offline. Writes go to both.
-    let tee = s5_node::TeeRegistry::new(remote, local);
-    Ok(Arc::new(tee))
+    match (local, remote) {
+        (Ok(local), Some(remote)) => {
+            let tee = s5_node::TeeRegistry::new(remote, local);
+            Ok(Arc::new(tee))
+        }
+        (Ok(local), None) => Ok(local),
+        (Err(_), Some(remote)) => {
+            tracing::info!("local registry locked, using remote-only for group state");
+            Ok(remote)
+        }
+        (Err(e), None) => Err(e.context(
+            "cannot open local registry (is the node running?) and no bootstrap peers available",
+        )),
+    }
 }
 
 async fn open_manager(

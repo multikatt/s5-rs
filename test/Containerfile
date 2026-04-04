@@ -1,0 +1,19 @@
+FROM docker.io/library/rust:1-bookworm AS builder
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libfuse3-dev pkg-config && \
+    rm -rf /var/lib/apt/lists/*
+
+WORKDIR /build
+COPY . .
+RUN cargo build --release -p s5_cli && \
+    cp target/release/s5 /usr/local/bin/s5
+
+FROM docker.io/library/debian:bookworm-slim
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates libfuse3-3 && \
+    rm -rf /var/lib/apt/lists/*
+
+COPY --from=builder /usr/local/bin/s5 /usr/local/bin/s5
+
+ENTRYPOINT ["s5"]

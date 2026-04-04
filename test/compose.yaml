@@ -1,0 +1,38 @@
+services:
+  alice:
+    image: s5-test
+    command: ["--node", "alice", "start"]
+    volumes:
+      - alice-config:/root/.config/s5
+      - alice-data:/root/.local/share/s5
+    networks:
+      - s5net
+
+  bob:
+    image: s5-test
+    command: ["--node", "bob", "start"]
+    volumes:
+      - bob-config:/root/.config/s5
+      - bob-data:/root/.local/share/s5
+    networks:
+      - s5net
+
+  charlie:
+    image: s5-test
+    command: ["--node", "charlie", "start"]
+    volumes:
+      - charlie-config:/root/.config/s5
+      - charlie-data:/root/.local/share/s5
+    networks:
+      - s5net
+
+volumes:
+  alice-config:
+  alice-data:
+  bob-config:
+  bob-data:
+  charlie-config:
+  charlie-data:
+
+networks:
+  s5net:
