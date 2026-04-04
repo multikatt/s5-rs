@@ -105,3 +105,124 @@ impl GroupState {
         self.shared_roots.remove(label)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn member_id(b: u8) -> MemberId {
+        [b; 32]
+    }
+
+    fn hash(b: u8) -> [u8; 32] {
+        [b; 32]
+    }
+
+    #[test]
+    fn new_group_has_founder_as_write_member() {
+        let state = GroupState::new("test".into(), member_id(1), "alice".into());
+        assert_eq!(state.name, "test");
+        assert_eq!(state.members.len(), 1);
+        assert!(state.is_member(&member_id(1)));
+        assert!(state.members[&member_id(1)].can_write);
+        assert_eq!(state.members[&member_id(1)].name, "alice");
+        assert!(state.shared_roots.is_empty());
+    }
+
+    #[test]
+    fn add_and_remove_member() {
+        let mut state = GroupState::new("test".into(), member_id(1), "alice".into());
+
+        state.add_member(
+            member_id(2),
+            MemberInfo {
+                name: "bob".into(),
+                can_write: false,
+            },
+        );
+        assert_eq!(state.members.len(), 2);
+        assert!(state.is_member(&member_id(2)));
+        assert!(!state.members[&member_id(2)].can_write);
+
+        let removed = state.remove_member(&member_id(2));
+        assert!(removed.is_some());
+        assert_eq!(removed.unwrap().name, "bob");
+        assert!(!state.is_member(&member_id(2)));
+        assert_eq!(state.members.len(), 1);
+    }
+
+    #[test]
+    fn remove_nonexistent_member_returns_none() {
+        let mut state = GroupState::new("test".into(), member_id(1), "alice".into());
+        assert!(state.remove_member(&member_id(99)).is_none());
+    }
+
+    #[test]
+    fn share_and_unshare_root() {
+        let mut state = GroupState::new("test".into(), member_id(1), "alice".into());
+
+        state.share_root(
+            "photos".into(),
+            SharedRoot {
+                hash: hash(0xAA),
+                published_by: member_id(1),
+                description: Some("vacation pics".into()),
+            },
+        );
+        assert_eq!(state.shared_roots.len(), 1);
+        assert_eq!(state.shared_roots["photos"].hash, hash(0xAA));
+
+        let removed = state.unshare_root("photos");
+        assert!(removed.is_some());
+        assert!(state.shared_roots.is_empty());
+    }
+
+    #[test]
+    fn share_root_overwrites_existing_label() {
+        let mut state = GroupState::new("test".into(), member_id(1), "alice".into());
+
+        state.share_root(
+            "music".into(),
+            SharedRoot {
+                hash: hash(1),
+                published_by: member_id(1),
+                description: None,
+            },
+        );
+        state.share_root(
+            "music".into(),
+            SharedRoot {
+                hash: hash(2),
+                published_by: member_id(1),
+                description: None,
+            },
+        );
+
+        assert_eq!(state.shared_roots.len(), 1);
+        assert_eq!(state.shared_roots["music"].hash, hash(2));
+    }
+
+    #[test]
+    fn cbor_roundtrip() {
+        let mut state = GroupState::new("mygroup".into(), member_id(1), "alice".into());
+        state.add_member(
+            member_id(2),
+            MemberInfo {
+                name: "bob".into(),
+                can_write: true,
+            },
+        );
+        state.share_root(
+            "docs".into(),
+            SharedRoot {
+                hash: hash(0xFF),
+                published_by: member_id(2),
+                description: Some("shared docs".into()),
+            },
+        );
+
+        let encoded = minicbor::to_vec(&state).unwrap();
+        let decoded: GroupState = minicbor::decode(&encoded).unwrap();
+        assert_eq!(state, decoded);
+    }
+}

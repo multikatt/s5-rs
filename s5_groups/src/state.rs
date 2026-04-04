@@ -183,3 +183,207 @@ impl GroupManager {
         self.registry.get(&stream_key).await
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::{MemberInfo, SharedRoot};
+    use async_trait::async_trait;
+    use std::collections::HashMap;
+    use std::sync::Mutex;
+
+    /// In-memory registry for testing.
+    #[derive(Debug, Default)]
+    struct MemRegistry {
+        entries: Mutex<HashMap<[u8; 32], StreamMessage>>,
+    }
+
+    impl MemRegistry {
+        fn new() -> Arc<Self> {
+            Arc::new(Self::default())
+        }
+    }
+
+    fn key_bytes(key: &StreamKey) -> [u8; 32] {
+        match key {
+            StreamKey::PublicKeyEd25519(k) => *k,
+            _ => panic!("unexpected key type in test"),
+        }
+    }
+
+    #[async_trait]
+    impl RegistryApi for MemRegistry {
+        async fn get(&self, key: &StreamKey) -> Result<Option<StreamMessage>> {
+            Ok(self.entries.lock().unwrap().get(&key_bytes(key)).cloned())
+        }
+
+        async fn set(&self, message: StreamMessage) -> Result<()> {
+            let k = key_bytes(&message.key);
+            self.entries.lock().unwrap().insert(k, message);
+            Ok(())
+        }
+
+        async fn delete(&self, key: &StreamKey) -> Result<()> {
+            self.entries.lock().unwrap().remove(&key_bytes(key));
+            Ok(())
+        }
+    }
+
+    fn member_id(b: u8) -> [u8; 32] {
+        [b; 32]
+    }
+
+    #[tokio::test]
+    async fn create_and_load_state() {
+        let reg = MemRegistry::new();
+        let mut mgr =
+            GroupManager::create(reg.clone(), "testgroup".into(), member_id(1), "alice".into())
+                .await
+                .unwrap();
+
+        assert!(mgr.can_write());
+
+        let state = mgr.load_state().await.unwrap().unwrap();
+        assert_eq!(state.name, "testgroup");
+        assert_eq!(state.members.len(), 1);
+        assert!(state.is_member(&member_id(1)));
+    }
+
+    #[tokio::test]
+    async fn open_rw_loads_existing_state() {
+        let reg = MemRegistry::new();
+        let mgr =
+            GroupManager::create(reg.clone(), "g".into(), member_id(1), "alice".into())
+                .await
+                .unwrap();
+
+        let sk = SigningKey::from_bytes(&mgr.signing_key_bytes().unwrap());
+
+        let mut mgr2 = GroupManager::open_rw(reg.clone(), sk).await.unwrap();
+        assert!(mgr2.can_write());
+
+        let state = mgr2.load_state().await.unwrap().unwrap();
+        assert_eq!(state.name, "g");
+    }
+
+    #[tokio::test]
+    async fn open_ro_cannot_publish() {
+        let reg = MemRegistry::new();
+        let mgr =
+            GroupManager::create(reg.clone(), "g".into(), member_id(1), "alice".into())
+                .await
+                .unwrap();
+
+        let group_id = *mgr.group_id();
+        let mut ro = GroupManager::open_ro(reg.clone(), group_id).await.unwrap();
+        assert!(!ro.can_write());
+
+        let state = ro.load_state().await.unwrap().unwrap();
+        assert_eq!(state.name, "g");
+
+        // Publishing should fail for read-only
+        let err = ro.publish_state(&state).await;
+        assert!(err.is_err());
+    }
+
+    #[tokio::test]
+    async fn publish_updates_are_visible() {
+        let reg = MemRegistry::new();
+        let mut mgr =
+            GroupManager::create(reg.clone(), "g".into(), member_id(1), "alice".into())
+                .await
+                .unwrap();
+
+        // Load, modify, publish
+        let mut state = mgr.load_state().await.unwrap().unwrap();
+        state.add_member(
+            member_id(2),
+            MemberInfo {
+                name: "bob".into(),
+                can_write: true,
+            },
+        );
+        state.share_root(
+            "photos".into(),
+            SharedRoot {
+                hash: [0xAA; 32],
+                published_by: member_id(1),
+                description: None,
+            },
+        );
+        mgr.publish_state(&state).await.unwrap();
+
+        // Re-load and verify
+        let reloaded = mgr.load_state().await.unwrap().unwrap();
+        assert_eq!(reloaded.members.len(), 2);
+        assert!(reloaded.is_member(&member_id(2)));
+        assert_eq!(reloaded.shared_roots.len(), 1);
+        assert_eq!(reloaded.shared_roots["photos"].hash, [0xAA; 32]);
+    }
+
+    #[tokio::test]
+    async fn multiple_publishes_increment_revision() {
+        let reg = MemRegistry::new();
+        let mut mgr =
+            GroupManager::create(reg.clone(), "g".into(), member_id(1), "alice".into())
+                .await
+                .unwrap();
+
+        let mut state = mgr.load_state().await.unwrap().unwrap();
+        state.add_member(
+            member_id(2),
+            MemberInfo {
+                name: "bob".into(),
+                can_write: false,
+            },
+        );
+        mgr.publish_state(&state).await.unwrap();
+
+        state.add_member(
+            member_id(3),
+            MemberInfo {
+                name: "charlie".into(),
+                can_write: false,
+            },
+        );
+        mgr.publish_state(&state).await.unwrap();
+
+        let final_state = mgr.load_state().await.unwrap().unwrap();
+        assert_eq!(final_state.members.len(), 3);
+    }
+
+    #[tokio::test]
+    async fn second_manager_sees_updates_from_first() {
+        let reg = MemRegistry::new();
+        let mut mgr1 =
+            GroupManager::create(reg.clone(), "g".into(), member_id(1), "alice".into())
+                .await
+                .unwrap();
+
+        let sk = SigningKey::from_bytes(&mgr1.signing_key_bytes().unwrap());
+
+        // mgr1 adds a member
+        let mut state = mgr1.load_state().await.unwrap().unwrap();
+        state.add_member(
+            member_id(2),
+            MemberInfo {
+                name: "bob".into(),
+                can_write: true,
+            },
+        );
+        mgr1.publish_state(&state).await.unwrap();
+
+        // mgr2 opens and sees the update
+        let mut mgr2 = GroupManager::open_rw(reg.clone(), sk).await.unwrap();
+        let state2 = mgr2.load_state().await.unwrap().unwrap();
+        assert_eq!(state2.members.len(), 2);
+        assert!(state2.is_member(&member_id(2)));
+    }
+
+    #[tokio::test]
+    async fn open_ro_nonexistent_group_returns_none() {
+        let reg = MemRegistry::new();
+        let mut mgr = GroupManager::open_ro(reg, [0xFF; 32]).await.unwrap();
+        assert!(mgr.load_state().await.unwrap().is_none());
+    }
+}
