@@ -340,9 +340,11 @@ async fn handle_download(
     tx: irpc::channel::mpsc::Sender<bytes::Bytes>,
 ) {
     let Some(cfg) = cfg else {
+        log::debug!("handle_download: no peer config for request, rejecting");
         return;
     };
     let hash: Hash = req.hash.into();
+    log::debug!("handle_download: hash={} skip_pin_check={}", hash, cfg.skip_pin_check);
 
     if !cfg.skip_pin_check {
         if let Some(pinner) = &pinner {
@@ -353,6 +355,7 @@ async fn handle_download(
                 .unwrap_or(false);
 
             if !is_pinned {
+                log::debug!("handle_download: blob {} not pinned, rejecting", hash);
                 return; // Not pinned by this user, deny download
             }
         }
@@ -362,20 +365,33 @@ async fn handle_download(
     let mut size_opt = None;
     let mut store_opt: Option<&BlobStore> = None;
     for name in &cfg.readable_stores {
-        if let Some(s) = stores.get(name)
-            && let Ok(true) = s.contains(hash).await
-        {
-            if let Ok(sz) = s.size(hash).await {
-                size_opt = Some(sz);
+        if let Some(s) = stores.get(name) {
+            match s.contains(hash).await {
+                Ok(true) => {
+                    if let Ok(sz) = s.size(hash).await {
+                        size_opt = Some(sz);
+                    }
+                    store_opt = Some(s);
+                    log::debug!("handle_download: found blob {} in store '{}'", hash, name);
+                    break;
+                }
+                Ok(false) => {
+                    log::debug!("handle_download: blob {} not in store '{}'", hash, name);
+                }
+                Err(e) => {
+                    log::debug!("handle_download: contains check failed for blob {} in store '{}': {}", hash, name, e);
+                }
             }
-            store_opt = Some(s);
-            break;
+        } else {
+            log::debug!("handle_download: store '{}' not found in stores map", name);
         }
     }
     let Some(store) = store_opt else {
+        log::debug!("handle_download: blob {} not found in any readable store", hash);
         return;
     };
     let Some(size) = size_opt else {
+        log::debug!("handle_download: could not get size for blob {}", hash);
         return;
     };
 

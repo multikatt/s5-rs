@@ -684,11 +684,15 @@ pub async fn run_group(
             let hash = Hash::from_bytes(root.hash);
             println!("mounting '{}' (hash: {}) at {}", label, hash, mount_point.display());
 
-            // Create the temp FS5 root for the mount
+            // Create a fresh temp FS5 root for the mount (wipe any stale data
+            // from previous mounts so we pick up the latest snapshot)
             let mount_fs_root = std::env::temp_dir()
                 .join("s5-group-mount")
                 .join(&group_id)
                 .join(&label);
+            if mount_fs_root.exists() {
+                std::fs::remove_dir_all(&mount_fs_root)?;
+            }
             std::fs::create_dir_all(&mount_fs_root)?;
 
             // Build a source store that can fetch from local + remote peers
@@ -758,6 +762,11 @@ pub async fn run_group(
                 blob_stores.push(Arc::new(BlobStore::without_outboard(remote)));
             }
 
+            println!(
+                "blob stores: {} local + {} remote peer(s)",
+                blob_stores.len() - all_peers.iter().filter(|p| p.id != endpoint.id()).count(),
+                all_peers.iter().filter(|p| p.id != endpoint.id()).count(),
+            );
             let fallback = FallbackBlobStore::new(blob_stores);
             let store = BlobStore::without_outboard(fallback);
 
@@ -1287,7 +1296,11 @@ impl s5_core::store::Store for FallbackBlobStore {
         let mut last_err = None;
         for store in &self.stores {
             match store.read_as_bytes(hash, offset, max_len).await {
-                Ok(bytes) => return Ok(bytes),
+                Ok(bytes) if !bytes.is_empty() => return Ok(bytes),
+                Ok(_) => {
+                    tracing::debug!("FallbackBlobStore: read {} returned empty, trying next store", hash);
+                    last_err = Some(anyhow!("empty response"));
+                }
                 Err(e) => {
                     tracing::debug!("FallbackBlobStore: read {} failed: {}", hash, e);
                     last_err = Some(e);
