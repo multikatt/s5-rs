@@ -198,9 +198,29 @@ echo "=== test 8: charlie joins with read-only invite ==="
 RO_INVITE=$(s5_exec alice group invite friends --read-only)
 JOIN_OUTPUT=$(s5_exec charlie group join "$RO_INVITE" --my-name "Charlie" 2>&1)
 echo "$JOIN_OUTPUT" | sed 's/^/  /'
-# Read-only members can't publish state, so charlie won't appear in
-# the member list for others. Just verify the join succeeded locally.
 echo "$JOIN_OUTPUT" | grep -q "read-only" || { echo "FAIL: charlie didn't join as read-only"; exit 1; }
+# Read-only members can't publish state themselves.
+# The join output includes charlie's endpoint ID for add-member.
+CHARLIE_EID=$(echo "$JOIN_OUTPUT" | grep "endpoint id:" | awk '{print $NF}')
+echo "  charlie endpoint id: $CHARLIE_EID"
+echo "  PASS"
+
+echo ""
+echo "=== test 8b: bob registers charlie via add-member ==="
+s5_exec bob group add-member friends "$CHARLIE_EID" "Charlie" --read-only 2>&1 | sed 's/^/  /'
+# Verify charlie now appears in the member list
+MEMBERS=$(s5_exec bob group members friends)
+echo "$MEMBERS" | sed 's/^/  /'
+echo "$MEMBERS" | grep -q "Charlie" || { echo "FAIL: Charlie not in members after add-member"; exit 1; }
+# Verify charlie is marked read-only
+echo "$MEMBERS" | grep "Charlie" | grep -q "\[ro\]" || { echo "FAIL: Charlie not marked as ro"; exit 1; }
+echo "  PASS"
+
+echo ""
+echo "=== test 8c: charlie can see herself in members ==="
+MEMBERS=$(s5_exec charlie group members friends)
+echo "$MEMBERS" | sed 's/^/  /'
+echo "$MEMBERS" | grep -q "Charlie" || { echo "FAIL: Charlie can't see herself in members"; exit 1; }
 echo "  PASS"
 
 echo ""

@@ -386,4 +386,48 @@ mod tests {
         let mut mgr = GroupManager::open_ro(reg, [0xFF; 32]).await.unwrap();
         assert!(mgr.load_state().await.unwrap().is_none());
     }
+
+    #[tokio::test]
+    async fn rw_member_adds_ro_member_on_their_behalf() {
+        let reg = MemRegistry::new();
+
+        // Alice creates the group
+        let mut mgr =
+            GroupManager::create(reg.clone(), "g".into(), member_id(1), "alice".into())
+                .await
+                .unwrap();
+
+        let group_id = *mgr.group_id();
+        let sk = SigningKey::from_bytes(&mgr.signing_key_bytes().unwrap());
+
+        // Charlie is a read-only member — can't publish state
+        let mut ro = GroupManager::open_ro(reg.clone(), group_id).await.unwrap();
+        assert!(!ro.can_write());
+
+        let state = ro.load_state().await.unwrap().unwrap();
+        assert!(!state.is_member(&member_id(3)));
+
+        // Alice (write-capable) registers Charlie
+        let mut state = mgr.load_state().await.unwrap().unwrap();
+        state.add_member(
+            member_id(3),
+            MemberInfo {
+                name: "charlie".into(),
+                can_write: false,
+            },
+        );
+        mgr.publish_state(&state).await.unwrap();
+
+        // Charlie can now see themselves via read-only access
+        let mut ro2 = GroupManager::open_ro(reg.clone(), group_id).await.unwrap();
+        let state2 = ro2.load_state().await.unwrap().unwrap();
+        assert!(state2.is_member(&member_id(3)));
+        assert!(!state2.members[&member_id(3)].can_write);
+
+        // A second rw manager also sees Charlie
+        let mut mgr2 = GroupManager::open_rw(reg.clone(), sk).await.unwrap();
+        let state3 = mgr2.load_state().await.unwrap().unwrap();
+        assert_eq!(state3.members.len(), 2);
+        assert!(state3.is_member(&member_id(3)));
+    }
 }

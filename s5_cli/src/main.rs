@@ -281,6 +281,18 @@ enum GroupCmd {
         #[arg(long, short = 'j', default_value = "8")]
         jobs: usize,
     },
+    /// Register a member in the group (requires write access)
+    AddMember {
+        /// Group ID or name alias
+        group_id: String,
+        /// The member's endpoint ID (64-char hex)
+        endpoint_id: String,
+        /// Display name for the member
+        name: String,
+        /// Register as read-only (default is read-write)
+        #[arg(long, action = clap::ArgAction::SetTrue)]
+        read_only: bool,
+    },
     /// Mount a shared root from a group via FUSE (files fetched on demand)
     Mount {
         /// Group ID or name alias

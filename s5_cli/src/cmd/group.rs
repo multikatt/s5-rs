@@ -93,15 +93,14 @@ pub async fn run_group(
                 .unwrap_or_else(|| GroupState::new(String::new(), my_endpoint_id, my_name.clone()));
 
             if !state.is_member(&my_endpoint_id) {
-                state.add_member(
-                    my_endpoint_id,
-                    MemberInfo {
-                        name: my_name,
-                        can_write: mgr.can_write(),
-                    },
-                );
-
                 if mgr.can_write() {
+                    state.add_member(
+                        my_endpoint_id,
+                        MemberInfo {
+                            name: my_name,
+                            can_write: true,
+                        },
+                    );
                     mgr.publish_state(&state).await?;
                 }
             }
@@ -112,14 +111,15 @@ pub async fn run_group(
             }
 
             println!("joined group '{}': {}", state.name, group_id_hex);
-            println!(
-                "access: {}",
-                if mgr.can_write() {
-                    "read-write"
-                } else {
-                    "read-only"
-                }
-            );
+            if mgr.can_write() {
+                println!("access: read-write");
+            } else {
+                println!("access: read-only");
+                println!("endpoint id: {}", hex::encode(my_endpoint_id));
+                println!(
+                    "note: a write-capable member must run `s5 group add-member` to register you"
+                );
+            }
         }
         GroupCmd::Leave { group_id } => {
             let group_id = resolve_group_id(node_config_file, &group_id)?;
@@ -251,6 +251,51 @@ pub async fn run_group(
 
             mgr.publish_state(&state).await?;
             println!("shared '{}' with group {}", label, group_id);
+        }
+        GroupCmd::AddMember {
+            group_id,
+            endpoint_id,
+            name,
+            read_only,
+        } => {
+            let group_id = resolve_group_id(node_config_file, &group_id)?;
+            let gd = load_group_data(node_config_file, &group_id)?;
+            let registry = open_tee_registry(
+                node_config_file,
+                config,
+                &endpoint,
+                &gd.bootstrap_peers,
+            )?;
+
+            let sk_bytes =
+                gd.secret_key.ok_or_else(|| anyhow!("read-only access, cannot add members"))?;
+            let sk = ed25519_dalek::SigningKey::from_bytes(&sk_bytes);
+            let mut mgr = GroupManager::open_rw(registry, sk).await?;
+
+            let mut state = mgr
+                .load_state()
+                .await?
+                .ok_or_else(|| anyhow!("group not found in registry"))?;
+
+            let member_id_bytes: [u8; 32] = hex::decode(&endpoint_id)
+                .context("invalid endpoint ID hex")?
+                .try_into()
+                .map_err(|_| anyhow!("endpoint ID must be 64 hex chars (32 bytes)"))?;
+
+            if state.is_member(&member_id_bytes) {
+                println!("member {} is already in the group", endpoint_id);
+            } else {
+                state.add_member(
+                    member_id_bytes,
+                    MemberInfo {
+                        name: name.clone(),
+                        can_write: !read_only,
+                    },
+                );
+                mgr.publish_state(&state).await?;
+                let access = if read_only { "ro" } else { "rw" };
+                println!("added '{}' [{}] to group", name, access);
+            }
         }
         GroupCmd::Unshare { group_id, label } => {
             let group_id = resolve_group_id(node_config_file, &group_id)?;
