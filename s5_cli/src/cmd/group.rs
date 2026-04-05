@@ -160,6 +160,12 @@ pub async fn run_group(
                 .await?
                 .ok_or_else(|| anyhow!("group not found in registry"))?;
 
+            // Discover new peers from group state
+            let state_peers = peers_from_state(&state, &my_endpoint_id);
+            let _ = update_stored_peers(
+                node_config_file, &gd.group_id, &gd.bootstrap_peers, &state_peers,
+            );
+
             println!("group '{}' — {} members:", state.name, state.members.len());
             for (id, info) in &state.members {
                 let access = if info.can_write { "rw" } else { "ro" };
@@ -182,6 +188,11 @@ pub async fn run_group(
                 .load_state()
                 .await?
                 .ok_or_else(|| anyhow!("group not found in registry"))?;
+
+            let state_peers = peers_from_state(&state, &my_endpoint_id);
+            let _ = update_stored_peers(
+                node_config_file, &gd.group_id, &gd.bootstrap_peers, &state_peers,
+            );
 
             println!("group: {}", state.name);
             println!("id:    {}", group_id);
@@ -344,6 +355,19 @@ pub async fn run_group(
                 .await?
                 .ok_or_else(|| anyhow!("group not found in registry"))?;
 
+            // Build combined peer list
+            let state_peers = peers_from_state(&state, &my_endpoint_id);
+            let _ = update_stored_peers(
+                node_config_file, &gd.group_id, &gd.bootstrap_peers, &state_peers,
+            );
+            let mut all_peers = gd.bootstrap_peers.clone();
+            let known_ids: HashSet<_> = all_peers.iter().map(|p| p.id).collect();
+            for p in state_peers {
+                if !known_ids.contains(&p.id) {
+                    all_peers.push(p);
+                }
+            }
+
             let root = state
                 .shared_roots
                 .get(&label)
@@ -359,9 +383,9 @@ pub async fn run_group(
             let hash = Hash::from_bytes(root.hash);
             println!("pulling '{}' (hash: {})", label, hash);
 
-            // Find a bootstrap peer to download from (try each until one works)
+            // Find a peer to download from (try each until one works)
             let mut downloaded = None;
-            for peer_addr in &gd.bootstrap_peers {
+            for peer_addr in &all_peers {
                 if peer_addr.id == endpoint.id() {
                     continue;
                 }
@@ -455,6 +479,19 @@ pub async fn run_group(
                 .await?
                 .ok_or_else(|| anyhow!("group not found in registry"))?;
 
+            // Build combined peer list
+            let state_peers = peers_from_state(&state, &my_endpoint_id);
+            let _ = update_stored_peers(
+                node_config_file, &gd.group_id, &gd.bootstrap_peers, &state_peers,
+            );
+            let mut all_peers = gd.bootstrap_peers.clone();
+            let known_ids: HashSet<_> = all_peers.iter().map(|p| p.id).collect();
+            for p in state_peers {
+                if !known_ids.contains(&p.id) {
+                    all_peers.push(p);
+                }
+            }
+
             let root = state
                 .shared_roots
                 .get(&label)
@@ -489,7 +526,7 @@ pub async fn run_group(
                 root_hash,
                 &meta_store,
                 &local_meta,
-                &gd.bootstrap_peers,
+                &all_peers,
                 &endpoint,
                 &mut visited,
                 &mut meta_count,
@@ -532,7 +569,7 @@ pub async fn run_group(
             // Download and pin file blobs concurrently
             let concurrency = jobs.max(1);
             let my_id = endpoint.id();
-            let peers: Vec<EndpointAddr> = gd.bootstrap_peers.iter()
+            let peers: Vec<EndpointAddr> = all_peers.iter()
                 .filter(|p| p.id != my_id)
                 .cloned()
                 .collect();
@@ -619,6 +656,19 @@ pub async fn run_group(
                 .await?
                 .ok_or_else(|| anyhow!("group not found in registry"))?;
 
+            // Build combined peer list from bootstrap peers + group state addresses
+            let state_peers = peers_from_state(&state, &my_endpoint_id);
+            let _ = update_stored_peers(
+                node_config_file, &gd.group_id, &gd.bootstrap_peers, &state_peers,
+            );
+            let mut all_peers = gd.bootstrap_peers.clone();
+            let known_ids: HashSet<_> = all_peers.iter().map(|p| p.id).collect();
+            for p in state_peers {
+                if !known_ids.contains(&p.id) {
+                    all_peers.push(p);
+                }
+            }
+
             let root = state
                 .shared_roots
                 .get(&label)
@@ -650,7 +700,7 @@ pub async fn run_group(
             }));
 
             // Recursively fetch all DirV1 metadata blobs into the mount's meta store.
-            // Try local meta store first, then remote peers.
+            // Try local meta store first, then all known peers.
             println!("fetching directory metadata tree...");
             let mut fetched = 0usize;
             let mut visited = HashSet::new();
@@ -658,7 +708,7 @@ pub async fn run_group(
                 hash,
                 &mount_meta_store,
                 &local_meta_store,
-                &gd.bootstrap_peers,
+                &all_peers,
                 &endpoint,
                 &mut visited,
                 &mut fetched,
@@ -699,7 +749,7 @@ pub async fn run_group(
             }
 
             // 4. Remote peers (on-demand fetching)
-            for peer_addr in &gd.bootstrap_peers {
+            for peer_addr in &all_peers {
                 if peer_addr.id == endpoint.id() {
                     continue;
                 }
@@ -743,6 +793,20 @@ fn open_local_registry(
     Ok(Arc::new(registry))
 }
 
+/// Build minimal `EndpointAddr` values from group member IDs.
+/// iroh's discovery (DHT/pkarr/relay) will resolve full addresses.
+fn peers_from_state(state: &GroupState, skip_id: &[u8; 32]) -> Vec<EndpointAddr> {
+    state
+        .members
+        .keys()
+        .filter(|id| *id != skip_id)
+        .map(|id| {
+            let key = iroh::PublicKey::from_bytes(id).expect("valid 32-byte public key");
+            EndpointAddr::from(key)
+        })
+        .collect()
+}
+
 /// Open a tee registry that reads/writes both local and remote peers.
 ///
 /// - Reads: try remote first (freshest group state), fall back to local
@@ -778,7 +842,7 @@ fn open_tee_registry(
     } else if remotes.len() == 1 {
         Some(remotes.into_iter().next().unwrap())
     } else {
-        Some(Arc::new(s5_node::MultiRegistry::new(remotes)))
+        Some(Arc::new(s5_node::MultiRegistry::with_policy(remotes, s5_node::WritePolicy::Any)))
     };
 
     match (local, remote) {
@@ -879,6 +943,35 @@ fn save_group_data(
         .context("failed to serialize bootstrap peers")?;
     std::fs::write(&peers_path, &peers_data).context("failed to save group peers")?;
 
+    Ok(())
+}
+
+/// Merge peers discovered from group state into the stored peers file.
+/// Adds any new EndpointAddrs not already known.
+fn update_stored_peers(
+    node_config_file: &std::path::Path,
+    group_id: &[u8; 32],
+    existing_peers: &[EndpointAddr],
+    new_peers: &[EndpointAddr],
+) -> Result<()> {
+    let mut known_ids: HashSet<_> = existing_peers.iter().map(|p| p.id).collect();
+    let mut merged: Vec<EndpointAddr> = existing_peers.to_vec();
+    let mut added = 0;
+    for peer in new_peers {
+        if known_ids.insert(peer.id) {
+            merged.push(peer.clone());
+            added += 1;
+        }
+    }
+    if added > 0 {
+        let dir = groups_dir(node_config_file);
+        let peers_path = dir.join(format!("{}.peers", hex::encode(group_id)));
+        let peers_data = postcard::to_allocvec(&merged)
+            .context("failed to serialize updated peers")?;
+        std::fs::write(&peers_path, &peers_data)
+            .context("failed to save updated peers")?;
+        tracing::debug!("added {} new peer(s) from group state", added);
+    }
     Ok(())
 }
 

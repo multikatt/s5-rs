@@ -43,6 +43,7 @@ pub struct MemberInfo {
     /// the group's membership or shared roots.
     #[n(1)]
     pub can_write: bool,
+
 }
 
 /// A shared content root — a pointer to an immutable FS5 directory snapshot.
@@ -225,4 +226,5 @@ mod tests {
         let decoded: GroupState = minicbor::decode(&encoded).unwrap();
         assert_eq!(state, decoded);
     }
+
 }
